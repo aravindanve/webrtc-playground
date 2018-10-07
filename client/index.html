@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+  <head>
+    <title>WebRTC Playground</title>
+    <link rel="stylesheet" href="css/style.css">
+  </head>
+  <body>
+    <div class="container">
+      <div class="video-grid">
+        <div class="video-cell">
+          <video id="local" autoplay muted></video>
+          <div class="video-indicator"></div>
+        </div>
+        <div class="video-cell">
+          <video class="remote" autoplay></video>
+        </div>
+        <div class="video-cell">
+          <video class="remote" autoplay></video>
+        </div>
+        <div class="video-cell">
+          <video class="remote" autoplay></video>
+        </div>
+      </div>
+      <div class="control-area">
+        <div class="control-panel">
+          <div class="control-panel-title">Media</div>
+          <div class="control-panel-body">
+            <label>Audio</label>
+            <select id="audioEnabledSelect">
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+            <label>Audio Device</label>
+            <select id="audioDeviceSelect">
+              <option value="">(Default)</option>
+            </select>
+            <label>Video</label>
+            <select id="videoQualitySelect">
+              <option value="ideal:1920x1080" selected>High Quality</option>
+              <option value="ideal:1280x720">Medium Quality</option>
+              <option value="ideal:640x480">Low Quality</option>
+              <option value="exact:7680x4320">8K: 7680x4320</option>
+              <option value="exact:4096x2160">4K: 4096x2160</option>
+              <option value="exact:1920x1080">Full HD: 1920x1080</option>
+              <option value="exact:1280x720">HD: 1280x720</option>
+              <option value="exact:640x480">VGA: 640x480</option>
+              <option value="exact:320x240">QVGA: 320x240</option>
+              <option value="false">None</option>
+            </select>
+            <label>Video Device</label>
+            <select id="videoDeviceSelect">
+              <option value="">(Default)</option>
+            </select>
+            <button id="mediaStartButton">Start</button>
+            <button id="mediaStopButton">Stop</button>
+          </div>
+        </div>
+        <div class="control-panel">
+          <div class="control-panel-title">Session</div>
+          <div class="control-panel-body">
+            <input id="sessionSignalingServerUrlInput" class="wide" placeholder="Signaling Server URL">
+            <label>Session ID:</label>
+            <input id="sessionIdInput" value="default">
+            <label>User</label>
+            <input id="sessionUsernameInput" placeholder="username">
+            <button id="sessionConnectButton">Connect</button>
+            <button id="sessionDisconnectButton">Disconnect</button>
+          </div>
+        </div>
+        <div class="control-panel">
+          <div class="control-panel-title">Peers</div>
+          <div class="control-panel-body">
+            <div>
+              <label>My Peer ID:</label>
+              <span id="myPeerIdSpan">NA</span>
+              <button id="peerPublishButton">Publish</button>
+              <button id="peerUnpublishButton">Unpublish</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="js/socket.io.js"></script>
+    <script src="js/sdk.js"></script>
+    <script src="js/actions.js"></script>
+  </body>
+</html>
