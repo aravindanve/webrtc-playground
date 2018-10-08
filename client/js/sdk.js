@@ -1,21 +1,21 @@
+const DEBUG = true;
+
 function generateId() {
   const mul = 0x100000000;
-  return Math.floor(Math.random() * mul).toString(16).toLowerCase()
+  const id = Math.floor(Math.random() * mul).toString(16).toLowerCase()
     + Math.floor(Math.random() * mul).toString(16).toLowerCase()
     + Math.floor(Math.random() * mul).toString(16).toLowerCase()
     + Math.floor(Math.random() * mul).toString(16).toLowerCase();
+
+  return id.length === 32 ? id : '0' + id;
 }
 
 class Dispatcher {
   constructor() {
     this.listeners = {};
-
-    console.log('Initialized Dispatcher', this);
   }
 
   on(type, callback) {
-    console.log('Dispatcher.on', type, !!callback);
-
     if (type && callback) {
       this.listeners[type] = this.listeners[type] || [];
       this.listeners[type].push(callback);
@@ -25,8 +25,6 @@ class Dispatcher {
   }
 
   off(type, callback) {
-    console.log('Dispatcher.off', type, !!callback);
-
     if (!type) {
       this.listeners = {};
 
@@ -46,13 +44,6 @@ class Dispatcher {
   }
 
   emit(type, event) {
-    if (type.match(/error/gi)) {
-      console.error('Dispatcher.emit', type, event);
-
-    } else {
-      console.log('Dispatcher.emit', type, event);
-    }
-
     if (type in this.listeners) {
       const stack = this.listeners[type];
 
@@ -96,6 +87,7 @@ const SignalMessageType = {
 
 const SessionEvent = {
   ERROR: 'error',
+  INFO: 'info',
   PEERS: 'peers',
   PEER_JOINED: 'peer_joined',
   PEER_LEFT: 'peer_left',
@@ -113,6 +105,7 @@ const defaultAnswerOptions = {
   voiceActivityDetection: true
 };
 
+// TODO: session stream added and removed events
 class Session extends Dispatcher {
   constructor(sessionId, options = {}) {
     super();
@@ -125,28 +118,15 @@ class Session extends Dispatcher {
     this.iceServers = undefined;
     this.peers = undefined;
     this.peerConnections = {};
-    this.streams = {};
-    this.sessionPublisherMap = new Map();
-
-    console.log('Initialized Session', this);
+    this.sessionPublishers = new Map();
   }
 
   get isConnected() {
-    console.log('Session.isConnected (getter)');
-
     return this.socket && this.socket.connected
       ? true : false;
   }
 
-  get myPeerId() {
-    console.log('Session.myPeerId (getter)');
-
-    return this.info && this.info.peerId;
-  }
-
   async connect() {
-    console.log('Session.connect');
-
     if (this.socket) {
       throw new SessionConnectionError(
         'Connection already in progress');
@@ -199,104 +179,88 @@ class Session extends Dispatcher {
   }
 
   async disconnect() {
-    console.log('Session.disconnect');
-
     if (!this.socket) return;
 
     this.off();
+    this._destroyAllPeerConnections();
+    await this._destroyAllPublishers();
     this.socket.off();
     this.socket.disconnect();
     this.socket = undefined;
     this.info = undefined;
     this.iceServers = undefined;
     this.peers = undefined;
-    // TOOD: clean up peer connections
-    this.peerConnections = {};
-    // TOOD: clean up streams
-    this.streams = {};
-    // TODO: clean up publishers
-    this.sessionPublisherMap = new Map();
   }
 
   async publish(publisher) {
-    console.log('Session.publish', publisher);
+    if (this.sessionPublishers.has(publisher.publisherId)) return;
 
     const publisherId = publisher.publisherId;
     const stream = await publisher.getStream();
-    const senders = this._publishStream(stream);
-
-    // TODO: validate double publish
-    this.sessionPublisherMap.set(publisherId, {
-      publisher,
-      senders
-    });
-
-    // TODO: remove senders when peer connection is destroyed
-
-    return stream;
-  }
-
-  async unpublish(publisher) {
-    console.log('Session.unpublish', publisher);
-
-    // TODO: unpublish
-  }
-
-  _publishStream(stream) {
-    console.log('Session._publishStream', stream);
-
     const peerIds = Object.keys(this.peerConnections);
-    const senders = [];
 
     for (let i = 0; i < peerIds.length; i++) {
       const peerId = peerIds[i];
       const peerConnection = this.peerConnections[peerId];
 
-      this._publishStreamTracks(peerConnection, stream, senders);
+      peerConnection.addStream(stream);
     }
 
-    return senders;
-  };
+    this.sessionPublishers.set(publisherId, publisher);
+    publisher.sessions.set(this.sessionId, this);
+    publisher.emit(PublisherEvent.STREAM_PUBLISHED, stream);
 
-  _publishStreamTracks(peerConnection, stream, senders = []) {
-    console.log('Session._publishStreamTracks', peerConnection, stream, senders);
+    return stream;
+  }
 
-    const tracks = stream.getTracks();
+  async unpublish(publisher) {
+    if (!this.sessionPublishers.has(publisher.publisherId)) return;
 
-    for (let i = 0; i < tracks.length; i++) {
-      const track = tracks[i];
+    const publisherId = publisher.publisherId;
+    const stream = await publisher.getStream();
+    const peerIds = Object.keys(this.peerConnections);
 
-      senders.push(peerConnection.addTrack(track, stream));
+    for (let i = 0; i < peerIds.length; i++) {
+      const peerId = peerIds[i];
+      const peerConnection = this.peerConnections[peerId];
+
+      peerConnection.removeStream(stream);
     }
 
-    return senders;
-  };
+    this.sessionPublishers.delete(publisherId);
+    publisher.sessions.delete(this.sessionId);
+    publisher.emit(PublisherEvent.STREAM_UNPUBLISHED, stream);
+
+    return stream;
+  }
+
+  async _destroyAllPublishers() {
+    const promises = []
+    for (const publisher of this.sessionPublishers.values()) {
+      promises.push(this.unpublish(publisher));
+    }
+
+    this.sessionPublishers = new Map();
+    return Promise.all(promises);
+  }
 
   _handleConnect(resolve) {
-    console.log('Session._handleConnect', 'Session connected');
     resolve();
   }
 
   _handleConnectError(err, resolve, reject) {
-    console.log('Session._handleConnectError', err);
     reject(err);
   }
 
   _handleInfo(payload) {
-    console.log('Session._handleInfo', payload);
-
     this.info = payload;
   }
 
   _handleIceServers(payload) {
-    console.log('Session._handleIceServers', payload);
-
     this.iceServers = payload;
-  };
+  }
 
   _handlePeers(payload) {
-    console.log('Session._handlePeers', payload);
-
     const peers = payload;
 
     // TODO: clean up peers
@@ -311,22 +275,18 @@ class Session extends Dispatcher {
 
     // TODO: emit clone
     this.emit(SessionEvent.PEERS, this.peers);
-  };
+  }
 
   _createOffer(peerId, initiator = true) {
-    console.log('Session._createOffer', peerId);
-
     const peerConnection =
       this._getOrCreatePeerConnection(peerId, initiator);
 
     peerConnection.createOffer(defaultOfferOptions)
       .then(offer => this._handleLocalOffer(peerConnection, offer))
       .catch(err => this.emit(SessionEvent.ERROR, err));
-  };
+  }
 
   _handlePeerJoined(payload) {
-    console.log('Session._handlePeerJoined', payload);
-
     const { peerId, username } = payload;
 
     this.peers = this.peers || {};
@@ -337,26 +297,21 @@ class Session extends Dispatcher {
 
     // TODO: emit clone
     this.emit(SessionEvent.PEER_JOINED, this.peers[peerId]);
-  };
+  }
 
   _handlePeerLeft(payload) {
-    console.log('Session._handlePeerLeft', payload);
-
     const { peerId } = payload;
 
     if (!this.peers && this.peers[peerId]) return;
 
-    // TODO: clean up peer resources
-
+    this._destroyPeerConnection(peerId);
     delete this.peers[peerId];
 
     // TODO: emit clone
     this.emit(SessionEvent.PEER_LEFT, { peerId });
-  };
+  }
 
   _handleMessage(payload) {
-    console.log('Session._handleMessage', payload);
-
     const { from, type, data } = payload;
 
     switch (type) {
@@ -372,11 +327,9 @@ class Session extends Dispatcher {
       case SignalMessageType.SEND_OFFER:
         return this._handleSendOffer(from);
     }
-  };
+  }
 
   _handleLocalOffer(peerConnection, offer) {
-    console.log('Session._handleLocalOffer', peerConnection, offer);
-
     // handle only if offer created
     if (!offer) return;
 
@@ -387,21 +340,17 @@ class Session extends Dispatcher {
       to: peerConnection.peerId,
       data: { type, sdp }
     });
-  };
+  }
 
   _handleRemoteOffer(peerId, offer) {
-    console.log('Session._handleRemoteOffer', peerId, offer);
-
     const peerConnection = this._getOrCreatePeerConnection(peerId);
 
     peerConnection.acceptOffer(offer, defaultAnswerOptions)
       .then(answer => this._handleLocalAnswer(peerConnection, answer))
       .catch(err => this.emit(SessionEvent.ERROR, err));
-  };
+  }
 
   _handleLocalAnswer(peerConnection, answer) {
-    console.log('Session._handleLocalAnswer', peerConnection, answer);
-
     // handle only if answer created
     if (!answer) return;
 
@@ -412,20 +361,16 @@ class Session extends Dispatcher {
       to: peerConnection.peerId,
       data: { type, sdp }
     });
-  };
+  }
 
   _handleRemoteAnswer(peerId, answer) {
-    console.log('Session._handleRemoteAnswer', peerId, answer);
-
     const peerConnection = this._getOrCreatePeerConnection(peerId);
 
     peerConnection.acceptAnswer(answer)
       .catch(err => this.emit(SessionEvent.ERROR, err));
-  };
+  }
 
   _getOrCreatePeerConnection(peerId, initiator = false) {
-    console.log('Session._getOrCreatePeerConnection', peerId);
-
     if (!this.peerConnections[peerId]) {
       const configuration = {
         iceServers: this.iceServers
@@ -451,59 +396,57 @@ class Session extends Dispatcher {
     return this.peerConnections[peerId];
   }
 
-  _publishFoundStreams(peerConnection) {
-    console.log('Session._publishFoundStreams', peerConnection);
+  _destroyAllPeerConnections() {
+    const peerIds = Object.keys(this.peerConnections);
 
-    if (!this.sessionPublisherMap.size) return;
-
-    for (const sessionPublisher of this.sessionPublisherMap.values()) {
-      const { publisher, senders } = sessionPublisher;
-
-      if (publisher.hasStream) {
-        publisher.getStream()
-          .then(stream =>
-            this._publishStreamTracks(peerConnection, stream, senders))
-          .catch(err => this.emit(SessionEvent.ERROR, err));
-      }
+    for (let i = 0; i < peerIds.length; i++) {
+      this._destroyPeerConnection(peerIds[i]);
     }
-  };
+  }
+
+  _destroyPeerConnection(peerId) {
+    if (!this.peerConnections[peerId]) return;
+
+    this.peerConnections[peerId].close();
+    delete this.peerConnections[peerId];
+  }
+
+  _publishFoundStreams(peerConnection) {
+    for (const publisher of this.sessionPublishers.values()) {
+      if (!publisher.hasStream) continue;
+
+      publisher.getStream()
+        .then(stream => peerConnection.addStream(stream))
+        .catch(err => this.emit(SessionEvent.ERROR, err));
+    }
+  }
 
   _handleRemoteStreamEvent(peerConnection, event) {
-    console.log('Session._handleRemoteStreamEvent', peerConnection, event);
-
     this.emit(SessionEvent.STREAM, event);
-  };
+  }
 
   _handleLocalIceCandidate(peerConnection, candidate) {
-    console.log('Session._handleLocalIceCandidate', peerConnection, candidate);
-
     this.socket.emit(SignalEvent.MESSAGE, {
       type: SignalMessageType.ICE_CANDIDATE,
       to: peerConnection.peerId,
       data: candidate
     });
-  };
+  }
 
   _handleRemoteIceCandidate(peerId, candidate) {
-    console.log('Session._handleRemoteIceCandidate', peerId, candidate);
-
     const peerConnection = this._getOrCreatePeerConnection(peerId);
 
     if (candidate) {
       peerConnection.addIceCandidate(candidate)
         .catch(err => this.emit(SessionEvent.ERROR, err));
     }
-  };
+  }
 
   _handleSendOffer(peerId) {
-    console.log('Session._handleSendOffer', peerId);
-
     this._createOffer(peerId);
   }
 
   _handleNegotiationNeeded(peerConnection, event) {
-    console.log('Session._handleNegotiationNeeded', peerConnection, event);
-
     const peerId = peerConnection.peerId;
 
     // create offer only if initiator
@@ -546,6 +489,7 @@ const PeerConnectionSignalingState = {
   HAVE_REMOTE_PROVISIONAL_ANSWER: 'have-remote-pranswer'
 };
 
+// TODO: communicate unpublish to remote peer
 class PeerConnection extends Dispatcher {
   constructor(peerId, configuration, initiator = false) {
     super();
@@ -553,6 +497,7 @@ class PeerConnection extends Dispatcher {
     this.initiator = initiator;
     this.connection = new RTCPeerConnection();
     this.stream = undefined;
+    this.senders = new Map();
     this.negotiating = false;
 
     this.connection.setConfiguration(configuration);
@@ -565,24 +510,21 @@ class PeerConnection extends Dispatcher {
 
     this.connection.onnegotiationneeded = e =>
       this._handleNegotiationNeeded(e);
-
-    console.log('Initialized PeerConnection', this);
   }
 
-  // TODO: implement state rollback in case of offer message loss
+  // TODO: implement state rollback to accept latest offer
   // see http://w3c.github.io/webrtc-pc/#rtcsignalingstate-enum
 
-  // TODO: prevent sending offers multiple times
-
   async createOffer(offerOptions) {
-    console.log('%c BEEP-BOP PeerConnection.createOffer',
-      'background: #06b8e0; color: #273303', offerOptions);
+    console.log('%c BEEP-BOP PeerConnection.createOffer ',
+      'background: #06b8e0; color: #273303',
+      offerOptions);
 
     // dont create offer if already negotiating
     // HACK: if messages are lost or errors are thrown,
     // this may result in a deadlock
     if (this.negotiating) {
-      console.log(`%c BEEP-BOP already negotiating, skipping...`,
+      console.log(`%c BEEP-BOP already negotiating, skipping... `,
         'background: #86ed4e; color: #273303');
 
       return;
@@ -598,8 +540,9 @@ class PeerConnection extends Dispatcher {
   }
 
   async acceptOffer(offer, answerOptions) {
-    console.log('%c BEEP-BOP PeerConnection.acceptOffer',
-      'background: #f4e542; color: #273303', { offer }, answerOptions);
+    console.log('%c BEEP-BOP PeerConnection.acceptOffer ',
+      'background: #f4e542; color: #273303',
+      { offer }, answerOptions);
 
     await this.connection.setRemoteDescription(offer);
 
@@ -611,8 +554,9 @@ class PeerConnection extends Dispatcher {
   }
 
   async acceptAnswer(answer) {
-    console.log('%c BEEP-BOP PeerConnection.acceptAnswer',
-      'background: #07bc40; color: #273303', { answer });
+    console.log('%c BEEP-BOP PeerConnection.acceptAnswer ',
+      'background: #07bc40; color: #273303',
+      { answer });
 
     this.negotiating = false;
 
@@ -620,37 +564,56 @@ class PeerConnection extends Dispatcher {
   }
 
   async addIceCandidate(candidate) {
-    console.log('PeerConnection.addIceCandidate', candidate);
-
     return this.connection.addIceCandidate(candidate);
   }
 
-  addTrack(track, ...streams) {
-    console.log('PeerConnection.addTrack', track, ...streams);
+  addStream(stream) {
+    const mediaStream = stream.mediaStream;
+    const tracks = mediaStream.getTracks();
+    const publisherId = stream.publisherId;
 
-    const mediaStreams = streams.map(stream => stream.mediaStream);
+    let senders;
+    if (!this.senders.has(publisherId)) {
+      this.senders.set(publisherId, senders = []);
 
-    return this.connection.addTrack(track, ...mediaStreams);
+    } else {
+      senders = this.senders.get(publisherId);
+    }
+
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+
+      senders.push(this.connection
+        .addTrack(track, mediaStream));
+    }
   }
 
-  removeTrack(sender) {
-    console.log('PeerConnection.removeTrack', sender);
+  removeStream(stream) {
+    const publisherId = stream.publisherId;
+    const senders = this.senders.get(publisherId);
 
-    return this.connection.removeTrack(sender);
+    if (!senders) return;
+
+    for (let i = 0; i < senders.length; i++) {
+      const sender = senders[i];
+
+      this.connection.removeTrack(sender);
+    }
+  }
+
+  close() {
+    this.senders = new Map();
+    this.connection.close();
   }
 
   _handleTrack(event) {
-    console.log('PeerConnection._handleTrack', event);
-
     const track = event.track;
     const stream = this._getOrCreateStream();
 
     stream.addTrack(track);
-  };
+  }
 
   _getOrCreateStream() {
-    console.log('PeerConnection._getOrCreateStream');
-
     if (!this.stream) {
       const stream = new Stream(this.peerId);
       const event = new StreamEvent(stream);
@@ -660,63 +623,50 @@ class PeerConnection extends Dispatcher {
     }
 
     return this.stream;
-  };
+  }
 
   _handleIceCandidate(event) {
-    console.log('PeerConnection._handleIceCandidate', event);
-
     this.emit(PeerConnectionEvent.ICE_CANDIDATE, event);
-  };
+  }
 
+  // TODO: handle multiple negotiation needed events while adding tracks
   _handleNegotiationNeeded(event) {
-    console.log('%c BEEP-BOP PeerConnection._handleNegotiationNeeded',
+    console.log('%c BEEP-BOP PeerConnection._handleNegotiationNeeded ',
       'background: #cc53d1; color: #273303', event);
 
     this.emit(PeerConnectionEvent.NEGOTIATION_NEEDED, event);
-  };
+  }
 }
 
 class StreamEvent {
   constructor(stream) {
     this.stream = stream;
-
-    console.log('Initialized StreamEvent', this);
   }
 }
 
 class Stream {
   constructor(peerId) {
-    this.local = false;
+    this.publisherId = undefined;
     this.peerId = peerId;
     this.mediaStream = peerId && new MediaStream();
-
-    console.log('Initialized Stream', this);
   }
 
   addTrack(track) {
-    console.log('Stream.addTrack', track);
-
     return this.mediaStream.addTrack(track);
   }
 
   getTracks() {
-    console.log('Stream.getTracks');
-
     return this.mediaStream.getTracks();
   }
 
   getSrcObject() {
-    console.log('Stream.getSrcObject');
-
     return this.mediaStream;
   }
 
-  static fromMediaStream(mediaStream, local = true) {
-    console.log('Stream.fromMediaStream (static)', mediaStream, local);
-
+  static fromMediaStream(mediaStream, publisherId) {
     const stream = new Stream();
 
-    stream.local = local;
+    stream.publisherId = publisherId;
     stream.mediaStream = mediaStream;
 
     return stream;
@@ -731,18 +681,23 @@ const defaultMediaConstraints = {
   }
 };
 
-class Publisher {
+const PublisherEvent = {
+  STREAM_CREATED: 'stream_created',
+  STREAM_DESTROYED: 'stream_destroyed',
+  STREAM_PUBLISHED: 'stream_published',
+  STREAM_UNPUBLISHED: 'stream_unpublished'
+};
+
+class Publisher extends Dispatcher {
   constructor(constraints) {
+    super();
     this.publisherId = generateId();
     this.stream = undefined;
     this.setConstraints(constraints);
-
-    console.log('Initialized Publisher', this);
+    this.sessions = new Map();
   }
 
   setConstraints(constraints = {}) {
-    console.log('Publisher.setConstraints', constraints);
-
     this.mediaConstraints = {
       ...defaultMediaConstraints,
       ...constraints
@@ -752,31 +707,32 @@ class Publisher {
   }
 
   get hasStream() {
-    console.log('Publisher.hasStream (getter)');
-
     return !!this.stream;
   }
 
   async getStream() {
-    console.log('Publisher.getStream');
-
     if (!this.stream) {
       const mediaStream = await navigator.mediaDevices
         .getUserMedia(this.mediaConstraints);
-      const stream = Stream.fromMediaStream(mediaStream);
+      const stream = Stream
+        .fromMediaStream(mediaStream, this.publisherId);
 
       this.stream = stream;
+      this.emit(PublisherEvent.STREAM_CREATED, this.stream);
     }
 
     return this.stream;
   }
 
   async clearStream() {
-    console.log('Publisher.clearStream');
-
     if (!this.stream) return;
 
-    // TODO: unpublish properly
+    const promises = [];
+    for (session of this.sessions.values()) {
+      promises.push(this.unpublish(session));
+    }
+
+    await Promise.all(promises);
 
     const stream = this.stream;
     const tracks = stream.getTracks();
@@ -786,13 +742,22 @@ class Publisher {
     }
 
     this.stream = undefined;
+    this.emit(PublisherEvent.STREAM_DESTROYED, stream);
 
     return stream;
   }
 
-  // TODO:
-  // async publish() { }
-  // async unpublish() { }
+  async publish(session) {
+    if (this.sessions.has(session.sessionId)) return;
+
+    return this.sessions.get(session.sessionId).publish(this);
+  }
+
+  async unpublish(session) {
+    if (!this.sessions.has(session.sessionId)) return;
+
+    return this.sessions.get(session.sessionId).unpublish(this);
+  }
 }
 
 class Subscriber { }
@@ -808,3 +773,48 @@ function createSession(sessionId, options) {
 function createPublisher(options) {
   return new Publisher(options);
 }
+
+// debugger
+(function classDebugger(debug) {
+  if (!debug) return;
+
+  const debugObjects = [
+    Dispatcher,
+    Session,
+    SessionConnectionError,
+    PeerConnection,
+    StreamEvent,
+    Stream,
+    Publisher,
+    Subscriber,
+    getDevices,
+    createSession,
+    createPublisher
+  ];
+
+  const getHue = index =>
+    `${Math.floor((index / debugObjects.length) * 256)}`;
+
+  // log function calls
+  for (let i = 0; i < debugObjects.length; i++) {
+    const debugObject = debugObjects[i];
+    const debugObjectName = debugObject.name;
+    const debugObjectPrototype = debugObject.prototype;
+    const hue = getHue(i);
+
+    for (const prop of Object.getOwnPropertyNames(debugObjectPrototype)) {
+      if (typeof debugObjectPrototype[prop] === 'function') {
+        const method = debugObjectPrototype[prop];
+
+        debugObjectPrototype[prop] = function () {
+          console.log(`%c ${debugObjectName} `,
+            `background: hsl(${hue}, 76%, 61%); color: #000`,
+            `.${prop}(`, ...arguments, ')');
+
+          return method.apply(this, arguments);
+        };
+      }
+    }
+  }
+
+})(DEBUG);

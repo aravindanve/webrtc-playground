@@ -20,8 +20,20 @@ const app = connect().use('/', serveStatic('client/'));
 const server = createServer(serverOptions, app);
 const io = createIO(server, ioOptions);
 
-const NOOP = () => {};
-const IceServers = [];
+const NOOP = () => { };
+const StunUrl = process.env.STUN_URL && {
+  urls: `stun:${process.env.STUN_URL}`
+};
+const TurnUrl = process.env.TURN_URL && {
+  urls: `turn:${process.env.TURN_URL}`,
+  username: process.env.TURN_USERNAME,
+  credential: process.env.TURN_CREDENTIAL
+};
+
+const IceServers = [
+  ...StunUrl ? [StunUrl] : [],
+  ...TurnUrl ? [TurnUrl] : []
+];
 const peerMaps = {};
 
 const getPeersInRoom = room =>
