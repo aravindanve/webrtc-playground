@@ -43,15 +43,24 @@ const localVideoElement = document.querySelector('video#local');
 
 let publisher = createPublisher();
 
-const playLocalStream = (stream, status) => {
-  // TODO: check if same src is already set
-  localVideoElement.srcObject = stream.getSrcObject();
-  localVideoElement.setAttribute('data-status', status || 'ready');
+const playLocalStream = (stream, status = 'ready') => {
+  const srcObject = stream.getSrcObject();
+
+  if (!localVideoElement.srcObject ||
+      localVideoElement.srcObject.id !== srcObject.id) {
+    localVideoElement.srcObject = srcObject;
+  }
+  localVideoElement.setAttribute('data-status', status);
 };
 
-const stopLocalStream = () => {
-  localVideoElement.srcObject = undefined;
-  localVideoElement.setAttribute('data-status', 'off');
+const stopLocalStream = stream => {
+  const srcObject = stream.getSrcObject();
+
+  if (localVideoElement.srcObject &&
+      localVideoElement.srcObject.id === srcObject.id) {
+    localVideoElement.srcObject = undefined;
+    localVideoElement.setAttribute('data-status', 'off');
+  }
 };
 
 const enableMediaStartControls = () => {
@@ -82,10 +91,6 @@ const handleMediaStartClick = () => {
   disableMediaStartControls();
   publisher.setConstraints(getPublisherConstraints());
   publisher.getStream()
-    .then(stream => {
-      playLocalStream(stream);
-      enableMediaStopControls();
-    })
     .catch(err => {
       console.error('ERROR', err);
       enableMediaStartControls();
@@ -95,17 +100,27 @@ const handleMediaStartClick = () => {
 const handleMediaStopClick = () => {
   disableMediaStopControls();
   publisher.clearStream()
-    .then(() => {
-      stopLocalStream();
-      enableMediaStartControls();
-    })
     .catch(err => {
       console.error('ERROR', err);
       enableMediaStopControls();
     });
 };
 
+const handleStreamCreated = stream => {
+  disableMediaStartControls();
+  enableMediaStopControls();
+  playLocalStream(stream, 'ready');
+};
+
+const handleStreamDestroyed = stream => {
+  enableMediaStartControls();
+  disableMediaStopControls();
+  stopLocalStream(stream);
+};
+
 disableMediaStopControls();
+publisher.on('stream_created', handleStreamCreated);
+publisher.on('stream_destroyed', handleStreamDestroyed);
 mediaStartButton.onclick = handleMediaStartClick;
 mediaStopButton.onclick = handleMediaStopClick;
 
@@ -167,6 +182,8 @@ const handleSessionConnectClick = () => {
     .then(() => {
       myPeerIdSpan.innerHTML = session.myPeerId;
       enableSessionDisconnectControls();
+      enablePeerPublishControls();
+      disablePeerUnpublishControls();
     })
     .catch(err => {
       console.error('ERROR', err);
@@ -180,6 +197,8 @@ const handleSessionDisconnectClick = () => {
     .then(() => {
       session = undefined;
       enableSessionConnectControls();
+      disablePeerPublishControls();
+      disablePeerUnpublishControls();
     })
     .catch(err => {
       console.error('ERROR', err);
@@ -234,10 +253,6 @@ const disablePeerUnpublishControls = () => {
 const handlePeerPublishClick = () => {
   disablePeerPublishControls();
   session.publish(publisher)
-    .then(stream => {
-      playLocalStream(stream, 'on');
-      enablePeerUnpublishControls();
-    })
     .catch(err => {
       console.error('ERROR', err);
       enablePeerPublishControls();
@@ -245,15 +260,30 @@ const handlePeerPublishClick = () => {
 };
 
 const handlePeerUnpublishClick = () => {
-  // disablePeerUnpublishControls();
+  disablePeerUnpublishControls();
 
-  // TODO: handlePeerUnpublishClick
+  session.unpublish(publisher)
+    .catch(err => {
+      console.error('ERROR', err);
+      enablePeerUnpublishControls();
+    });
 };
 
-enablePeerUnpublishControls();
+const handleStreamPublished = stream => {
+  disablePeerPublishControls();
+  playLocalStream(stream, 'on');
+  enablePeerUnpublishControls();
+};
+
+const handleStreamUnpublished = stream => {
+  disablePeerUnpublishControls();
+  playLocalStream(stream, 'ready');
+  enablePeerPublishControls();
+};
+
+disablePeerPublishControls();
+disablePeerUnpublishControls();
+publisher.on('stream_published', handleStreamPublished);
+publisher.on('stream_unpublished', handleStreamUnpublished);
 peerPublishButton.onclick = handlePeerPublishClick;
 peerUnpublishButton.onclick = handlePeerUnpublishClick;
-
-// streamEmitter.onStreamCreated = stream => {
-//   remoteVideoElement.srcObject = stream;
-// };
